@@ -10,12 +10,19 @@ import requests
 import win32print
 from PIL import Image, ImageTk
 from openpyxl.utils import get_column_letter
-
+import ctypes
 import mysql.connector
 from mysql.connector import errorcode
 
 import sys
 import os
+
+def resolver_ruta(ruta_relativa):
+    if hasattr(sys, '_MEIPASS'):
+        # Si estamos ejecutando el .exe, buscamos en la carpeta temporal interna
+        return os.path.join(sys._MEIPASS, ruta_relativa)
+    # Si estamos ejecutando el script .py, buscamos en la carpeta normal
+    return os.path.join(os.path.abspath("."), ruta_relativa)
 
 def ruta_recursos(ruta_relativa):
     """ Obtiene la ruta absoluta al recurso, funcione como script o como exe """
@@ -71,7 +78,7 @@ def inicializar_base_datos(config_ini):
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
                 total DECIMAL(10,2),
-                metodo_pago VARCHAR(20) DEFAULT 'Efectivo'
+                metodo_pago VARCHAR(50) DEFAULT 'Efectivo'
             ) ENGINE=InnoDB;
         """
 
@@ -95,6 +102,47 @@ def inicializar_base_datos(config_ini):
                 print(f"✅ Tabla '{nombre_tabla}' verificada.")
             except mysql.connector.Error as err:
                 print(f"❌ Error creando tabla {nombre_tabla}: {err.msg}")
+
+        # 5.5. Actualizar columnas existentes si la tabla ya fue creada antes
+        try:
+            # Modificar metodo_pago a VARCHAR(50) si existe y es más pequeño
+            cursor.execute("""
+                ALTER TABLE ventas 
+                MODIFY COLUMN metodo_pago VARCHAR(50) DEFAULT 'Efectivo'
+            """)
+            print("✅ Columna 'metodo_pago' actualizada a VARCHAR(50).")
+        except mysql.connector.Error as err:
+            # Si la columna no existe o ya tiene el tamaño correcto, ignoramos el error
+            if "doesn't exist" not in str(err).lower() and "Duplicate column name" not in str(err):
+                print(f"⚠️  Info: metodo_pago - {err.msg}")
+
+        # Verificar y agregar columnas adicionales si no existen
+        try:
+            # Verificar si existe pago_con
+            cursor.execute("SHOW COLUMNS FROM ventas LIKE 'pago_con'")
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE ventas ADD COLUMN pago_con DECIMAL(10,2) DEFAULT 0.00")
+                print("✅ Columna 'pago_con' agregada.")
+        except mysql.connector.Error as err:
+            print(f"⚠️  Info: pago_con - {err.msg}")
+
+        try:
+            # Verificar si existe vuelto
+            cursor.execute("SHOW COLUMNS FROM ventas LIKE 'vuelto'")
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE ventas ADD COLUMN vuelto DECIMAL(10,2) DEFAULT 0.00")
+                print("✅ Columna 'vuelto' agregada.")
+        except mysql.connector.Error as err:
+            print(f"⚠️  Info: vuelto - {err.msg}")
+
+        try:
+            # Verificar si existe fecha_venta (si usas fecha_venta en lugar de fecha)
+            cursor.execute("SHOW COLUMNS FROM ventas LIKE 'fecha_venta'")
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE ventas ADD COLUMN fecha_venta DATETIME DEFAULT CURRENT_TIMESTAMP")
+                print("✅ Columna 'fecha_venta' agregada.")
+        except mysql.connector.Error as err:
+            print(f"⚠️  Info: fecha_venta - {err.msg}")
 
         # 6. (Opcional) Cargar datos iniciales básicos si está vacío
         #    Ejemplo: Un producto de prueba o un usuario Admin
@@ -256,80 +304,283 @@ class VentanaDetalleInventario:
         except Exception as e:
             pass
 
+import tkinter as tk
+from tkinter import ttk, messagebox
 
 class VentanaCobro:
-    def __init__(self, master, total_a_pagar, callback_finalizar):
+    def __init__(self, master, total_a_pagar, callback_guardar):
         self.top = tk.Toplevel(master)
-        self.top.title("Procesar Pago")
-        self.top.geometry("400x350")
+        self.top.title("Cierre de Caja")
+        self.top.geometry("460x700") # Un poco más alta para que quepan los dos inputs
+        self.top.grab_set() 
         
-        # Variables
-        self.total = total_a_pagar
-        self.callback = callback_finalizar # Esta es la función que guardará en la BD
-        self.var_pago = tk.DoubleVar(value=0.0)
-        self.var_vuelto = tk.StringVar(value="$0.00")
-
-        # Hacer la ventana MODAL (Bloquea la ventana de atrás hasta que cierres esta)
-        self.top.grab_set()
+        BG_COLOR = "#e3e3e3" 
+        self.top.config(bg=BG_COLOR)
         
-        # --- UI ---
-        tk.Label(self.top, text="TOTAL A PAGAR", font=("Arial", 12)).pack(pady=10)
-        tk.Label(self.top, text=f"${self.total:.2f}", font=("Arial", 30, "bold"), fg="#d9534f").pack()
-
-        tk.Label(self.top, text="Paga con ($):", font=("Arial", 12)).pack(pady=(20, 5))
+        self.total_original = total_a_pagar
+        self.total_final = total_a_pagar 
+        self.callback = callback_guardar
         
-        self.entry_pago = tk.Entry(self.top, textvariable=self.var_pago, font=("Arial", 20), justify='center')
-        self.entry_pago.pack(pady=5)
-        self.entry_pago.bind('<KeyRelease>', self.calcular_vuelto) # Calcula cada vez que escribes
-        self.entry_pago.bind('<Return>', self.confirmar_pago)      # Enter para confirmar
-        self.entry_pago.focus_set()
-        self.entry_pago.select_range(0, tk.END)
+        # Fuentes
+        self.FONT_BIG = ("Segoe UI", 28, "bold") 
+        self.FONT_TITLE = ("Segoe UI", 11)
+        self.FONT_OPTION = ("Segoe UI", 12)
+        self.FONT_SELECTED = ("Segoe UI", 12, "bold")
+        self.FONT_INPUT = ("Segoe UI", 14)
+        
+        # --- CABECERA ---
+        frame_top = tk.Frame(self.top, bg=BG_COLOR)
+        frame_top.pack(fill="x", pady=(10, 0))
+        
+        tk.Label(frame_top, text="TOTAL A PAGAR", bg=BG_COLOR, fg="#555", font=self.FONT_TITLE).pack()
+        
+        self.lbl_total_gigante = tk.Label(frame_top, text=f"${self.total_final:.2f}", bg=BG_COLOR, fg="#dc3545", font=self.FONT_BIG)
+        self.lbl_total_gigante.pack()
+        
+        self.lbl_info_recargo = tk.Label(frame_top, text="", bg=BG_COLOR, fg="#b08d00", font=("Segoe UI", 10, "bold"))
+        self.lbl_info_recargo.pack()
 
-        tk.Label(self.top, text="Su Vuelto:", font=("Arial", 12)).pack(pady=(20, 5))
-        self.lbl_vuelto = tk.Label(self.top, textvariable=self.var_vuelto, font=("Arial", 25, "bold"), fg="green")
-        self.lbl_vuelto.pack()
+        # --- MÉTODOS ---
+        frame_medio = tk.Frame(self.top, bg=BG_COLOR)
+        frame_medio.pack(fill="x", padx=30, pady=5)
 
-        self.btn_confirmar = tk.Button(self.top, text="CONFIRMAR VENTA (Enter)", 
-                                       bg="#28a745", fg="white", font=("Arial", 12, "bold"),
-                                       state="disabled", # Desactivado hasta que el pago alcance
-                                       command=self.confirmar_pago)
-        self.btn_confirmar.pack(fill="x", side="bottom", padx=20, pady=20)
+        tk.Label(frame_medio, text="MÉTODO:", bg=BG_COLOR, font=("Segoe UI", 10, "bold"), anchor="w").pack(fill="x")
+        
+        self.var_metodo = tk.StringVar(value="Efectivo")
+        self.radio_widgets = {}
 
-    def calcular_vuelto(self, event=None):
-        try:
-            pago = self.var_pago.get()
-            
-            # Lógica del vuelto
-            vuelto = pago - self.total
-            
-            # Actualizar etiqueta
-            self.var_vuelto.set(f"${vuelto:.2f}")
+        # Agregamos "Pago Mixto" a las opciones
+        opciones = ["Efectivo", "Tarjeta Débito", "Tarjeta Crédito", "Mercado Pago", "Pago Mixto"]
+        
+        for opcion in opciones:
+            rb = tk.Radiobutton(frame_medio, text=opcion, variable=self.var_metodo, 
+                                value=opcion, bg=BG_COLOR, activebackground=BG_COLOR,
+                                font=self.FONT_OPTION, anchor="w",
+                                command=self.actualizar_interfaz)
+            rb.pack(fill="x", pady=2) 
+            self.radio_widgets[opcion] = rb
 
-            # Validar si alcanza el dinero
-            if vuelto >= 0:
-                self.lbl_vuelto.config(fg="green")
-                self.btn_confirmar.config(state="normal", bg="#28a745") # Habilitar botón
+        # --- RECARGO GLOBAL ---
+        frame_interes = tk.Frame(frame_medio, bg=BG_COLOR)
+        frame_interes.pack(fill="x", pady=(5, 5))
+        
+        tk.Label(frame_interes, text="Interés %:", bg=BG_COLOR, font=("Segoe UI", 12)).pack(side="left")
+        
+        self.var_porcentaje = tk.StringVar(value="0")
+        self.entry_interes = tk.Entry(frame_interes, textvariable=self.var_porcentaje, 
+                                      font=("Segoe UI", 12, "bold"), width=5, justify="center", bd=1)
+        self.entry_interes.pack(side="left", padx=10)
+        self.entry_interes.bind("<KeyRelease>", self.recalcular_total)
+        self.entry_interes.config(state="disabled")
+
+        # ==========================================================
+        # ZONA DINÁMICA: Aquí mostramos o el Pago Simple o el Mixto
+        # ==========================================================
+        self.frame_contenedor_pagos = tk.Frame(self.top, bg=BG_COLOR)
+        self.frame_contenedor_pagos.pack(fill="x", padx=30, pady=10)
+
+        # --- OPCIÓN A: PAGO SIMPLE (El cuadro blanco de siempre) ---
+        self.frame_simple = tk.Frame(self.frame_contenedor_pagos, bg="white", bd=1, relief="solid")
+        
+        tk.Label(self.frame_simple, text="PAGA CON:", bg="white", fg="#555", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(10,0))
+        self.var_pago_simple = tk.DoubleVar(value=0.0)
+        self.entry_pago_simple = tk.Entry(self.frame_simple, textvariable=self.var_pago_simple, font=self.FONT_INPUT, 
+                                          justify="center", bd=0, bg="#f9f9f9")
+        self.entry_pago_simple.pack(fill="x", padx=10, pady=5)
+        self.entry_pago_simple.bind("<KeyRelease>", self.calcular_vuelto_simple)
+        self.entry_pago_simple.bind("<Return>", lambda e: self.confirmar_pago())
+        
+        tk.Frame(self.frame_simple, bg="#ccc", height=1).pack(fill="x", padx=10) # Línea
+
+        tk.Label(self.frame_simple, text="SU VUELTO:", bg="white", fg="#555", font=("Segoe UI", 10)).pack(padx=10, pady=(5,0))
+        self.lbl_vuelto_simple = tk.Label(self.frame_simple, text="$0.00", bg="white", fg="#28a745", font=("Segoe UI", 20, "bold"))
+        self.lbl_vuelto_simple.pack(padx=10, pady=(0,10))
+
+        # --- OPCIÓN B: PAGO MIXTO (Dos líneas de pago) ---
+        self.frame_mixto = tk.Frame(self.frame_contenedor_pagos, bg=BG_COLOR)
+        
+        # Línea 1
+        f1 = tk.Frame(self.frame_mixto, bg="white", bd=1, relief="solid")
+        f1.pack(fill="x", pady=2)
+        self.combo_m1 = ttk.Combobox(f1, values=["Efectivo", "Tarjeta", "Mercado Pago"], state="readonly", width=15, font=self.FONT_OPTION)
+        self.combo_m1.current(0) # Efectivo
+        self.combo_m1.pack(side="left", padx=5, pady=5)
+        
+        self.var_monto1 = tk.DoubleVar(value=0.0)
+        self.entry_monto1 = tk.Entry(f1, textvariable=self.var_monto1, font=self.FONT_INPUT, width=10, justify="right", bd=0)
+        self.entry_monto1.pack(side="right", padx=5, pady=5)
+        self.entry_monto1.bind("<KeyRelease>", self.calcular_restante_mixto) # Al escribir, calcula el resto
+
+        # Línea 2 (Automática)
+        f2 = tk.Frame(self.frame_mixto, bg="white", bd=1, relief="solid")
+        f2.pack(fill="x", pady=2)
+        self.combo_m2 = ttk.Combobox(f2, values=["Tarjeta", "Mercado Pago", "Efectivo"], state="readonly", width=15, font=self.FONT_OPTION)
+        self.combo_m2.current(1) # Tarjeta
+        self.combo_m2.pack(side="left", padx=5, pady=5)
+        
+        self.var_monto2 = tk.DoubleVar(value=0.0)
+        self.entry_monto2 = tk.Entry(f2, textvariable=self.var_monto2, font=self.FONT_INPUT, width=10, justify="right", bd=0)
+        self.entry_monto2.pack(side="right", padx=5, pady=5)
+        
+        # Info de saldo restante
+        self.lbl_info_mixto = tk.Label(self.frame_mixto, text="Falta cubrir: $0.00", bg=BG_COLOR, fg="#dc3545", font=("Segoe UI", 10, "bold"))
+        self.lbl_info_mixto.pack(pady=5)
+
+        # --- BOTÓN CONFIRMAR ---
+        self.btn_confirmar = tk.Button(self.top, text="CONFIRMAR PAGO", 
+                                  bg="#28a745", fg="white", font=("Segoe UI", 14, "bold"),
+                                  activebackground="#218838", activeforeground="white", cursor="hand2",
+                                  command=self.confirmar_pago)
+        self.btn_confirmar.pack(side="bottom", fill="x", padx=30, pady=20, ipady=15)
+
+        # Inicializar
+        self.actualizar_interfaz()
+
+    def actualizar_interfaz(self):
+        seleccion = self.var_metodo.get()
+        
+        # Estilos visuales
+        for texto, widget in self.radio_widgets.items():
+            if texto == seleccion:
+                widget.config(fg="#0056b3", font=self.FONT_SELECTED)
             else:
-                self.lbl_vuelto.config(fg="red") # Poner rojo si falta plata
-                self.btn_confirmar.config(state="disabled", bg="#cccccc") # Deshabilitar botón
+                widget.config(fg="black", font=self.FONT_OPTION)
+
+        # Lógica de Interés (Solo habilitado en Tarjetas puras para simplificar)
+        if "Tarjeta" in seleccion and seleccion != "Pago Mixto": 
+            self.entry_interes.config(state="normal", bg="white")
+            if self.var_porcentaje.get() == "0": self.var_porcentaje.set("10")
+        else:
+            self.var_porcentaje.set("0") # Reseteamos interés al cambiar a mixto o efectivo
+            self.entry_interes.config(state="disabled", bg="#e3e3e3")
+            self.recalcular_total() # Para limpiar el recargo si existía
+
+        # SWITCH DE PANTALLAS (Simple vs Mixto)
+        if seleccion == "Pago Mixto":
+            self.frame_simple.pack_forget() # Ocultar simple
+            self.frame_mixto.pack(fill="x") # Mostrar mixto
+            self.entry_monto1.focus_set()
+            self.calcular_restante_mixto()
+        else:
+            self.frame_mixto.pack_forget()  # Ocultar mixto
+            self.frame_simple.pack(fill="x") # Mostrar simple
+            
+            # Lógica simple normal
+            if seleccion == "Efectivo":
+                self.entry_pago_simple.config(state="normal", bg="#f9f9f9")
+                self.entry_pago_simple.delete(0, tk.END)
+                self.entry_pago_simple.focus_set()
+            else:
+                self.entry_pago_simple.config(state="normal")
+                self.var_pago_simple.set(self.total_final)
+                self.entry_pago_simple.config(state="disabled", bg="#e3e3e3")
+
+    def recalcular_total(self, event=None):
+        # Lógica idéntica de recargos
+        try:
+            porcentaje_txt = self.var_porcentaje.get()
+            if not porcentaje_txt: porcentaje_txt = "0"
+            porcentaje = float(porcentaje_txt)
+            
+            monto_recargo = self.total_original * (porcentaje / 100)
+            self.total_final = self.total_original + monto_recargo
+            
+            self.lbl_total_gigante.config(text=f"${self.total_final:.2f}")
+            
+            if porcentaje > 0:
+                self.lbl_info_recargo.config(text=f"+ {porcentaje}% recargo (${monto_recargo:.2f})")
+            else:
+                self.lbl_info_recargo.config(text="")
+            
+            # Actualizar inputs si no es mixto
+            if self.var_metodo.get() != "Efectivo" and self.var_metodo.get() != "Pago Mixto":
+                 self.entry_pago_simple.config(state="normal")
+                 self.var_pago_simple.set(self.total_final)
+                 self.entry_pago_simple.config(state="disabled")
+            elif self.var_metodo.get() == "Pago Mixto":
+                self.calcular_restante_mixto()
+
+        except ValueError: pass
+
+    def calcular_vuelto_simple(self, event):
+        try:
+            pago = float(self.entry_pago_simple.get())
+            vuelto = pago - self.total_final
+            if vuelto < 0:
+                self.lbl_vuelto_simple.config(text="Falta dinero", fg="#dc3545")
+            else:
+                self.lbl_vuelto_simple.config(text=f"${vuelto:.2f}", fg="#28a745")
+        except ValueError:
+            self.lbl_vuelto_simple.config(text="$0.00")
+
+    def calcular_restante_mixto(self, event=None):
+        """Calcula automágicamente el segundo monto"""
+        try:
+            monto1_txt = self.entry_monto1.get()
+            if not monto1_txt: monto1_txt = "0"
+            m1 = float(monto1_txt)
+            
+            # El monto 2 es lo que falta para llegar al total
+            resto = self.total_final - m1
+            
+            self.var_monto2.set(f"{resto:.2f}")
+            
+            if resto < 0:
+                self.lbl_info_mixto.config(text=f"Sobran: ${abs(resto):.2f} (Vuelto)", fg="green")
+            elif resto > 0:
+                self.lbl_info_mixto.config(text=f"Faltan cubrir: ${resto:.2f}", fg="#dc3545")
+            else:
+                self.lbl_info_mixto.config(text="¡Pago cubierto exacto!", fg="#28a745")
                 
-        except tk.TclError:
-            # Si el usuario escribe letras o deja vacío
-            self.var_vuelto.set("---")
-            self.btn_confirmar.config(state="disabled")
+        except ValueError: pass
 
-    def confirmar_pago(self, event=None):
-        # Solo procedemos si el botón está habilitado (el pago alcanza)
-        if self.btn_confirmar['state'] == 'normal':
-            pago_real = self.var_pago.get()
-            vuelto_real = pago_real - self.total
-            
-            self.top.destroy() # Cierra la ventana de cobro
-            
-            # LLAMAMOS A LA FUNCIÓN DE GUARDAR DE LA CLASE PRINCIPAL
-            # Le pasamos el pago y el vuelto para que salgan en el ticket
-            self.callback(pago_real, vuelto_real)
+    def confirmar_pago(self):
+        metodo = self.var_metodo.get()
+        pago_final = 0.0
+        vuelto_final = 0.0
+        metodo_guardar = metodo # Lo que guardaremos en la BD
 
+        if metodo == "Pago Mixto":
+            try:
+                m1 = self.var_monto1.get()
+                m2 = self.var_monto2.get()
+                nombre1 = self.combo_m1.get()
+                nombre2 = self.combo_m2.get()
+                
+                suma = m1 + m2
+                
+                # Tolerancia de 0.10 centavos
+                if suma < (self.total_final - 0.10):
+                    messagebox.showwarning("Error", f"Falta cubrir dinero.\nSuma actual: ${suma}")
+                    return
+                
+                # Crear string para la base de datos
+                metodo_guardar = f"Mixto: {nombre1}(${m1:.0f}) + {nombre2}(${m2:.0f})"
+                pago_final = suma
+                vuelto_final = suma - self.total_final
+                
+            except ValueError:
+                messagebox.showerror("Error", "Verifique los montos ingresados")
+                return
+        else:
+            # Lógica Simple
+            try:
+                pago_final = float(self.entry_pago_simple.get())
+            except ValueError:
+                pago_final = self.total_final
+
+            if metodo == "Efectivo" and pago_final < (self.total_final - 0.01): 
+                messagebox.showwarning("Atención", "El pago es insuficiente.")
+                return
+            
+            vuelto_final = pago_final - self.total_final
+        
+        if vuelto_final < 0: vuelto_final = 0
+        
+        self.top.destroy()
+        self.callback(metodo_guardar, pago_final, vuelto_final, self.total_final)
+
+        
 class VentanaInventario:
     def __init__(self, master, db_config):
         self.master = master
@@ -796,6 +1047,17 @@ class SistemaVentas:
         self.root = root
         self.root.title("PUNTO DE VENTA")
         self.root.state('zoomed') 
+
+        try:
+            app_id = 'mi_empresa.sistema_ventas.v1.0' # Puedes inventar cualquier nombre
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        except:
+            pass
+
+        try:
+            self.root.iconbitmap("logo.ico")
+        except Exception as e:
+            print(f"No se pudo cargar el icono: {e}")
         
         self.carrito = []
         self.db_config = self.cargar_configuracion()
@@ -1047,12 +1309,10 @@ class SistemaVentas:
             messagebox.showerror("Error Fatal", f"No se pudo leer config.ini: {e}")
             self.root.destroy() # Cierra el programa
             return None
-    def buscar_producto(self, event):
+    def buscar_producto(self, event=None):
         codigo = self.entry_codigo.get().strip()
-        if not codigo:
-            return
+        if not codigo: return
 
-        # 1. Buscar en Base de Datos
         try:
             conexion = mysql.connector.connect(**self.db_config)
             cursor = conexion.cursor(dictionary=True)
@@ -1060,58 +1320,48 @@ class SistemaVentas:
             producto_bd = cursor.fetchone()
             conexion.close()
         except Exception as e:
-            messagebox.showerror("Error", f"Error al buscar: {e}")
+            messagebox.showerror("Error", f"Error BD: {e}")
             return
 
         if producto_bd:
-            # 2. VALIDAR STOCK (Opcional pero recomendado)
+            # 1. Verificar Stock
             if producto_bd['stock_actual'] <= 0:
-                messagebox.showwarning("Sin Stock", f"El producto '{producto_bd['nombre']}' no tiene stock.")
+                messagebox.showwarning("Stock", "Producto agotado.")
                 self.entry_codigo.delete(0, tk.END)
                 return
 
-            # --- AQUÍ EMPIEZA LA MAGIA DE LA SUMA ---
-            
-            encontrado_en_carrito = False
-            
-            # Recorremos el carrito actual para ver si YA existe este producto
+            # 2. Lógica de Agrupación (Cantidad)
+            encontrado = False
             for item in self.carrito:
                 if item['id'] == producto_bd['id']:
-                    # ¡YA EXISTE! Solo sumamos la cantidad
                     item['cantidad'] += 1
                     item['subtotal'] = item['cantidad'] * item['precio']
-                    encontrado_en_carrito = True
-                    break # Dejamos de buscar
+                    encontrado = True
+                    break
             
-            # Si NO estaba en el carrito, lo agregamos como nuevo
-            if not encontrado_en_carrito:
+            if not encontrado:
                 nuevo_item = {
                     'id': producto_bd['id'],
                     'codigo': producto_bd['codigo_barras'],
                     'nombre': producto_bd['nombre'],
                     'precio': float(producto_bd['precio_venta']),
-                    'cantidad': 1, # Empieza con 1
+                    'cantidad': 1,
                     'subtotal': float(producto_bd['precio_venta'])
                 }
                 self.carrito.append(nuevo_item)
 
-            # ----------------------------------------
-
-            # 3. Limpiar input y actualizar tabla visual
-            self.entry_codigo.delete(0, tk.END)
+            # 3. Refrescar la interfaz
             self.actualizar_carrito_visual()
-
-        else:
-            messagebox.showwarning("No encontrado", "Producto no registrado")
             self.entry_codigo.delete(0, tk.END)
+        else:
+            messagebox.showwarning("Error", "Producto no encontrado")
 
 
     def actualizar_carrito_visual(self):
-        # 1. Limpiar tabla actual
+        # Limpiar Treeview
         for i in self.tree.get_children():
             self.tree.delete(i)
             
-        # 2. Rellenar con los datos actualizados del carrito
         self.total_acumulado = 0.0
         
         for item in self.carrito:
@@ -1119,13 +1369,14 @@ class SistemaVentas:
                 item['codigo'],
                 item['nombre'],
                 f"${item['precio']:.2f}",
-                item['cantidad'],       # <--- Ahora verás 2, 3, 4, etc.
+                item['cantidad'],       # Muestra la cantidad acumulada
                 f"${item['subtotal']:.2f}"
             ))
             self.total_acumulado += item['subtotal']
             
-        # 3. Actualizar el Label de TOTAL GIGANTE
+        # Actualizar Label Gigante
         self.lbl_total.config(text=f"TOTAL: ${self.total_acumulado:.2f}")
+
 
     def agregar_a_venta(self, producto):
         cantidad = 1
@@ -1158,10 +1409,55 @@ class SistemaVentas:
         # Abrimos la ventana de cobro y le pasamos:
         # 1. Quien es el padre (self.root)
         # 2. El total a pagar
-        # 3. La función que debe ejecutar si el pago es exitoso (self.registrar_venta_db)
-        VentanaCobro(self.root, self.total_acumulado, self.registrar_venta_db)
+        # 3. La función que debe ejecutar si el pago es exitoso (self.guardar_venta_bd)
+        VentanaCobro(self.root, self.total_acumulado, self.guardar_venta_bd)
 
-    def registrar_venta_db(self, pago, vuelto):
+    def guardar_venta_bd(self, metodo_pago, pago_cliente, vuelto, total_cobrado=None):
+        if total_cobrado is None:
+            total_cobrado = self.total_acumulado
+        try:
+            conexion = mysql.connector.connect(**self.db_config)
+            cursor = conexion.cursor()
+
+            # 1. Insertar en tabla VENTAS
+            # Asegúrate que tu tabla tenga la columna 'metodo_pago'
+            sql_venta = """INSERT INTO ventas 
+                           (total, pago_con, vuelto, metodo_pago, fecha_venta) 
+                           VALUES (%s, %s, %s, %s, NOW())"""
+            
+            val_venta = (total_cobrado, pago_cliente, vuelto, metodo_pago)
+            cursor.execute(sql_venta, val_venta)
+            id_venta_generado = cursor.lastrowid
+
+            # 2. Insertar Detalle y Restar Stock
+            sql_detalle = """INSERT INTO detalle_ventas 
+                             (id_venta, id_producto, cantidad, precio_unitario, subtotal) 
+                             VALUES (%s, %s, %s, %s, %s)"""
+                             
+            sql_stock = "UPDATE productos SET stock_actual = stock_actual - %s WHERE id = %s"
+
+            for item in self.carrito:
+                # Usamos item['cantidad'] que calculamos en buscar_producto
+                val_detalle = (id_venta_generado, item['id'], item['cantidad'], item['precio'], item['subtotal'])
+                cursor.execute(sql_detalle, val_detalle)
+                
+                # Restamos stock usando la misma cantidad
+                cursor.execute(sql_stock, (item['cantidad'], item['id']))
+
+            conexion.commit()
+            cursor.close()
+            conexion.close()
+
+            # 3. Finalizar proceso
+            self.generar_ticket(id_venta_generado, pago_cliente, vuelto) # Tu método de impresión
+            self.limpiar_interfaz_despues_venta() # Método simple para borrar todo
+            
+            
+
+        except Exception as e:
+            messagebox.showerror("Error Crítico", f"No se pudo guardar la venta: {e}")
+
+    '''def registrar_venta_db(self, pago, vuelto):
         try:
             conexion = mysql.connector.connect(**self.db_config)
             conexion.autocommit = False 
@@ -1208,7 +1504,7 @@ class SistemaVentas:
         finally:
             if conexion.is_connected():
                 cursor.close()
-                conexion.close()
+                conexion.close()'''
     # ### NUEVO: La función crítica ###
     '''def guardar_venta(self):
         if not self.carrito:
@@ -1529,8 +1825,8 @@ class SistemaVentas:
             
             # 1. Abrir imagen
             # DESPUÉS (Funciona siempre):
-            ruta_segura = ruta_recursos("logo_ticket.png")
-            im = Image.open(ruta_segura)
+            ruta_ticket = resolver_ruta("logo_ticket.png")
+            img = Image.open(ruta_ticket)
             
             # 2. Redimensionar para 58mm (Máximo 384 puntos de ancho)
             ancho_max = 370 # Dejamos un margen pequeño
@@ -1607,6 +1903,7 @@ class SistemaVentas:
 
             # 2. Conectar a BD
             conexion = mysql.connector.connect(**self.db_config)
+            cursor = conexion.cursor(dictionary=True)
             
             # 3. Query con Rango de Fechas (BETWEEN)
             # Ya no usamos CURDATE(), usamos los parámetros que calculamos
@@ -1619,7 +1916,9 @@ class SistemaVentas:
                     dv.cantidad AS 'Cantidad',
                     dv.precio_unitario AS 'Precio Unit.',
                     dv.subtotal AS 'Subtotal',
-                    v.metodo_pago AS 'Método Pago'
+                    v.metodo_pago AS 'Método Pago',
+                    v.pago_con AS 'Pago Con',
+                    v.vuelto AS 'vuelto'
                 FROM ventas v
                 JOIN detalle_ventas dv ON v.id = dv.id_venta
                 JOIN productos p ON dv.id_producto = p.id
@@ -1627,9 +1926,14 @@ class SistemaVentas:
                 ORDER BY v.id DESC
             """
             
-            # Pandas necesita los parámetros en una tupla o lista
-            df = pd.read_sql(query, conexion, params=(fecha_inicio, fecha_fin))
+            # 4. Ejecutar consulta manualmente y crear DataFrame desde los resultados (evita la advertencia de pandas)
+            cursor.execute(query, (fecha_inicio, fecha_fin))
+            resultados = cursor.fetchall()
+            cursor.close()
             conexion.close()
+            
+            # 5. Crear DataFrame desde los resultados
+            df = pd.DataFrame(resultados)
 
             if df.empty:
                 messagebox.showinfo("Reporte", "No hay ventas en este turno.")
@@ -1676,7 +1980,21 @@ class SistemaVentas:
     
     def abrir_lista_inventario(self):
         VentanaDetalleInventario(self.root, self.db_config)
-   
+    def abrir_ventana_cobro(self, event=None):
+        if not self.carrito:
+            messagebox.showwarning("Alerta", "El carrito está vacío.")
+            return
+            
+        # Instanciamos la ventana y le pasamos:
+        # 1. La ventana padre (self.root)
+        # 2. El total a pagar (self.total_acumulado)
+        # 3. La función que debe ejecutar SI confirman (self.guardar_venta_bd)
+        VentanaCobro(self.root, self.total_acumulado, self.guardar_venta_bd)
+    def limpiar_interfaz_despues_venta(self):
+        self.carrito = []
+        self.total_acumulado = 0.0
+        self.actualizar_carrito_visual() # Esto borrará el Treeview y pondrá el total en 0
+        self.entry_codigo.focus_set()
 
 
 # --- ARRANQUE ---
