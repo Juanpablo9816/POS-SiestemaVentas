@@ -1640,24 +1640,30 @@ class SistemaVentas:
                   bg="#dc3545", fg="white", font=("Arial", 10, "bold")).pack(pady=5)
 
     def generar_ticket(self, id_venta, pago, vuelto):
-        # 1. Variables para construir las DOS versiones
-        texto_visual = ""  # Lo que veremos en pantalla
+        # Variables para construir el ticket
         ticket_bytes = b"" # Lo que mandamos a la impresora
         
-        # Comandos (Solo para la versión bytes)
-        CMD_INIT = b'\x1b@'; CMD_CENTER = b'\x1b\x61\x01'; CMD_LEFT = b'\x1b\x61\x00'
+        # Comandos ESC/POS
+        CMD_INIT = b'\x1b@'
+        CMD_CENTER = b'\x1b\x61\x01'
+        CMD_LEFT = b'\x1b\x61\x00'
         CMD_CUT = b'\x1d\x56\x00'
 
-        # --- CONSTRUCCIÓN DEL CONTENIDO ---
-        
-        # Encabezado
-        texto_visual += "      KIOSCO MERCHI      \n"
-        texto_visual += "--------------------------------\n"
-        texto_visual += f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-        texto_visual += f"Ticket Nro: {id_venta}\n"
-        texto_visual += "--------------------------------\n"
+        # --- AGREGAR LOGO AL INICIO ---
+        try:
+            bytes_logo = self.obtener_bytes_imagen("logo_ticket.png")
+            if bytes_logo:
+                ticket_bytes += bytes_logo
+                ticket_bytes += b"\n" # Salto de línea después del logo
+        except Exception as e:
+            print(f"No se pudo agregar el logo al ticket: {e}")
 
-        ticket_bytes += CMD_INIT + CMD_CENTER + b"SUPERMERCADO PYTHON\n" + CMD_LEFT
+        # --- CONSTRUCCIÓN DEL CONTENIDO ---
+        ticket_bytes += CMD_INIT + CMD_CENTER + b"B Sefair Mna F Casa 1\n" + CMD_LEFT
+        ticket_bytes += CMD_INIT + CMD_CENTER + b"Calle Juan Jufre pasando Alem\n" + CMD_LEFT
+        ticket_bytes += CMD_INIT + CMD_CENTER + b"Villa del Salvador Angaco\n" + CMD_LEFT
+
+
         ticket_bytes += b"--------------------------------\n"
         ticket_bytes += f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n".encode('latin-1')
         ticket_bytes += f"Ticket Nro: {id_venta}\n".encode('latin-1')
@@ -1668,35 +1674,22 @@ class SistemaVentas:
             nombre = item['nombre'][:32].upper()
             linea_precio = f"{item['cantidad']} x ${item['precio']:.2f}    ${item['subtotal']:.2f}"
             
-            # Versión Visual
-            texto_visual += f"{nombre}\n{linea_precio}\n"
-            
-            # Versión Impresora
             ticket_bytes += f"{nombre}\n".encode('latin-1')
             ticket_bytes += f"{linea_precio}\n".encode('latin-1')
 
         # Totales
-        texto_visual += "--------------------------------\n"
-        texto_visual += f"TOTAL:  ${self.total_acumulado:.2f}\n"
-        texto_visual += f"PAGO:   ${pago:.2f}\n"
-        texto_visual += f"VUELTO: ${vuelto:.2f}\n"
-        texto_visual += "\n     GRACIAS POR SU COMPRA     \n"
-
         ticket_bytes += b"--------------------------------\n"
         ticket_bytes += CMD_CENTER + f"TOTAL: ${self.total_acumulado:.2f}\n".encode('latin-1') + CMD_LEFT
         ticket_bytes += f"PAGO:   ${pago:.2f}\n".encode('latin-1')
         ticket_bytes += f"VUELTO: ${vuelto:.2f}\n".encode('latin-1')
         ticket_bytes += b"\n" + CMD_CENTER + b"GRACIAS POR SU COMPRA\n" + b"\n\n\n" + CMD_CUT
 
-        # --- MOMENTO DE DECISIÓN ---
+        # --- IMPRIMIR TICKET ---
         try:
-            # Intentamos imprimir REALMENTE
-            NOMBRE_IMPRESORA = self.nombre_impresora_config # O self.config...
+            NOMBRE_IMPRESORA = self.nombre_impresora_config
             hPrinter = win32print.OpenPrinter(NOMBRE_IMPRESORA)
-            
-            #hPrinter = win32print.OpenPrinter(NOMBRE_IMPRESORA)
             try:
-                hJob = win32print.StartDocPrinter(hPrinter, 1, ("Ticket Agrupado", None, "RAW"))
+                hJob = win32print.StartDocPrinter(hPrinter, 1, ("Ticket", None, "RAW"))
                 try:
                     win32print.StartPagePrinter(hPrinter)
                     win32print.WritePrinter(hPrinter, ticket_bytes)
@@ -1705,19 +1698,10 @@ class SistemaVentas:
                     win32print.EndDocPrinter(hPrinter)
             finally:
                 win32print.ClosePrinter(hPrinter)
-            
-            win32print.ClosePrinter(hPrinter)
-            
         except Exception as e:
-            # SI FALLA (o estamos probando), mostramos la PREVISUALIZACIÓN VISUAL
-            print(f"Impresión física omitida: {e}")
-            
-            # Nombre del archivo que usas para el logo en blanco y negro
-            RUTA_LOGO_TICKET = "logo_ticket.png" 
-            print(RUTA_LOGO_TICKET)
-            
-            # Llamamos a la nueva función pasando el texto Y la ruta de la imagen
-            self.mostrar_ticket_virtual(texto_visual, RUTA_LOGO_TICKET)
+            # Si falla la impresión, solo mostramos el error en consola
+            print(f"Error al imprimir ticket: {e}")
+            messagebox.showerror("Error de Impresión", f"No se pudo imprimir el ticket:\n{e}")
     '''def generar_ticket(self, id_venta, pago, vuelto):
         NOMBRE_IMPRESORA = "POS-58" # <--- Asegúrate que este sea el nombre correcto
 
@@ -1824,7 +1808,6 @@ class SistemaVentas:
             from PIL import Image
             
             # 1. Abrir imagen
-            # DESPUÉS (Funciona siempre):
             ruta_ticket = resolver_ruta("logo_ticket.png")
             img = Image.open(ruta_ticket)
             
@@ -1832,25 +1815,25 @@ class SistemaVentas:
             ancho_max = 370 # Dejamos un margen pequeño
             
             # Calculamos la altura proporcional
-            porcentaje = (ancho_max / float(im.size[0]))
-            alto_nuevo = int((float(im.size[1]) * float(porcentaje)))
-            im = im.resize((ancho_max, alto_nuevo), Image.Resampling.LANCZOS)
+            porcentaje = (ancho_max / float(img.size[0]))
+            alto_nuevo = int((float(img.size[1]) * float(porcentaje)))
+            img = img.resize((ancho_max, alto_nuevo), Image.Resampling.LANCZOS)
             
             # 3. Convertir a Blanco y Negro puro (1-bit)
-            im = im.convert("1")
+            img = img.convert("1")
 
             # 4. Convertir la imagen a bytes ESC/POS (Comando GS v 0)
             # No te asustes con esta matemática, es el estándar de las impresoras
-            ancho_bytes = (im.width + 7) // 8
+            ancho_bytes = (img.width + 7) // 8
             datos_imagen = b""
             
             # Recorremos la imagen pixel a pixel y empaquetamos bits
-            datos_pixels = list(im.getdata())
+            datos_pixels = list(img.getdata())
             
-            for y in range(im.height):
+            for y in range(img.height):
                 fila_bytes = bytearray(ancho_bytes)
-                for x in range(im.width):
-                    if datos_pixels[y * im.width + x] == 0: # 0 es Negro en PIL '1' mode
+                for x in range(img.width):
+                    if datos_pixels[y * img.width + x] == 0: # 0 es Negro en PIL '1' mode
                         # Encendemos el bit correspondiente
                         fila_bytes[x // 8] |= (1 << (7 - (x % 8)))
                 datos_imagen += fila_bytes
@@ -1862,8 +1845,8 @@ class SistemaVentas:
             comando += (ancho_bytes % 256).to_bytes(1, 'little')
             comando += (ancho_bytes // 256).to_bytes(1, 'little')
             # Alto en puntos (Little Endian format)
-            comando += (im.height % 256).to_bytes(1, 'little')
-            comando += (im.height // 256).to_bytes(1, 'little')
+            comando += (img.height % 256).to_bytes(1, 'little')
+            comando += (img.height // 256).to_bytes(1, 'little')
             # Los datos de la imagen
             comando += datos_imagen
             
