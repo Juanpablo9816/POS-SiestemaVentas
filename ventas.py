@@ -1,22 +1,31 @@
-import pandas as pd
-from tkinter import filedialog
-import tkinter as tk
-from tkinter import ttk, messagebox
-import mysql.connector
-from datetime import datetime,timedelta
-import os
-import configparser
-import requests
-import win32print
-from PIL import Image, ImageTk
-from openpyxl.utils import get_column_letter
-import ctypes
-import mysql.connector
-from mysql.connector import errorcode
-
 import sys
-import os
-
+import traceback
+import mysql.connector.plugins.caching_sha2_password
+try:
+    import pandas as pd
+    from tkinter import filedialog
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+    import mysql.connector
+    from datetime import datetime,timedelta
+    import os
+    import configparser
+    import requests
+    import win32print
+    from PIL import Image, ImageTk
+    from openpyxl.utils import get_column_letter
+    import ctypes
+    import mysql.connector
+    from mysql.connector import errorcode
+    import traceback
+    import sys
+    import os
+except Exception as e:
+    # Si falla algún import, crea el archivo y muere
+    with open("error_inicio.txt", "w") as f:
+        f.write("ERROR EN LOS IMPORTS:\n")
+        f.write(traceback.format_exc())
+    sys.exit(1)
 def resolver_ruta(ruta_relativa):
     if hasattr(sys, '_MEIPASS'):
         # Si estamos ejecutando el .exe, buscamos en la carpeta temporal interna
@@ -36,8 +45,15 @@ def ruta_recursos(ruta_relativa):
     return os.path.join(base_path, ruta_relativa)
 
 def inicializar_base_datos(config_ini):
+    """
+    Inicializa la base de datos y crea las tablas si no existen.
+    Se ejecuta automáticamente al iniciar el programa.
+    """
     # 1. Conectarse a MySQL "en general" (sin especificar base de datos)
     #    para poder crearla si no existe.
+    conexion = None
+    cursor = None
+    
     try:
         conexion = mysql.connector.connect(
             host=config_ini['host'],
@@ -54,7 +70,7 @@ def inicializar_base_datos(config_ini):
             print(f"✅ Base de datos '{db_name}' verificada/creada.")
         except mysql.connector.Error as err:
             print(f"❌ Error creando BD: {err}")
-            return
+            return False
 
         # 3. Conectarse ahora sí a la base de datos específica
         conexion.database = db_name
@@ -99,9 +115,10 @@ def inicializar_base_datos(config_ini):
         for nombre_tabla, query in tablas.items():
             try:
                 cursor.execute(query)
-                print(f"✅ Tabla '{nombre_tabla}' verificada.")
+                print(f"✅ Tabla '{nombre_tabla}' verificada/creada.")
             except mysql.connector.Error as err:
                 print(f"❌ Error creando tabla {nombre_tabla}: {err.msg}")
+                return False
 
         # 5.5. Actualizar columnas existentes si la tabla ya fue creada antes
         try:
@@ -146,18 +163,36 @@ def inicializar_base_datos(config_ini):
 
         # 6. (Opcional) Cargar datos iniciales básicos si está vacío
         #    Ejemplo: Un producto de prueba o un usuario Admin
-        cursor.execute("SELECT COUNT(*) FROM productos")
-        if cursor.fetchone()[0] == 0:
-            print("📦 Base de datos nueva detectada. Insertando producto de ejemplo...")
-            cursor.execute("INSERT INTO productos (codigo_barras, nombre, precio_venta, stock_actual) VALUES ('12345', 'Producto Prueba', 100.00, 10)")
-            conexion.commit()
+        try:
+            cursor.execute("SELECT COUNT(*) FROM productos")
+            if cursor.fetchone()[0] == 0:
+                print("📦 Base de datos nueva detectada. Insertando producto de ejemplo...")
+                cursor.execute("INSERT INTO productos (codigo_barras, nombre, precio_venta, stock_actual) VALUES ('12345', 'Producto Prueba', 100.00, 10)")
+                conexion.commit()
+        except mysql.connector.Error as err:
+            print(f"⚠️  Info al insertar producto ejemplo: {err.msg}")
 
-        cursor.close()
-        conexion.close()
-        print("🚀 Inicialización completa.")
+        print("🚀 Inicialización de base de datos completa.")
+        return True
 
     except mysql.connector.Error as err:
-        print(f"Error de conexión crítico: {err}")
+        print(f"❌ Error de conexión crítico: {err}")
+        return False
+    except Exception as e:
+        print(f"❌ Error inesperado durante inicialización: {e}")
+        return False
+    finally:
+        # Asegurarse de cerrar las conexiones
+        if cursor:
+            try:
+                cursor.close()
+            except:
+                pass
+        if conexion and conexion.is_connected():
+            try:
+                conexion.close()
+            except:
+                pass
 
 class VentanaDetalleInventario:
     def __init__(self, master, db_config):
@@ -656,6 +691,7 @@ class VentanaInventario:
         # Eventos Placeholder
         self.entry_nombre.bind("<FocusIn>", self.on_entry_focus_in)
         self.entry_nombre.bind("<FocusOut>", self.on_entry_focus_out)
+        self.entry_nombre.bind("<KeyPress>", self.on_entry_key_press)  # Borrar placeholder al escribir
 
         # --- PRECIO Y STOCK (Lado a Lado para ahorrar espacio vertical) ---
        # --- REGISTRO DE VALIDADORES ---
@@ -738,7 +774,7 @@ class VentanaInventario:
             
         self.top.after(600, restaurar)
     def on_entry_focus_in(self, event):
-        if self.var_nombre.get() == self.placeholder_text:
+        if self.var_nombre.get() == self.placeholder_text or self.var_nombre.get() == "Producto nuevo. Ingrese nombre...":
             self.var_nombre.set("")
             self.entry_nombre.config(fg="black")
 
@@ -746,6 +782,15 @@ class VentanaInventario:
         if self.var_nombre.get() == "":
             self.var_nombre.set(self.placeholder_text)
             self.entry_nombre.config(fg="grey")
+    
+    def on_entry_key_press(self, event):
+        """Borrar el placeholder cuando el usuario empiece a escribir"""
+        texto_actual = self.var_nombre.get()
+        if texto_actual == self.placeholder_text or texto_actual == "Producto nuevo. Ingrese nombre...":
+            self.var_nombre.set("")
+            self.entry_nombre.config(fg="black")
+            # Permitir que el carácter presionado se escriba normalmente
+            return None
 
     def animar_no_encontrado(self):
         color_original = "white" # Ahora sabemos que el fondo es blanco
@@ -1061,6 +1106,14 @@ class SistemaVentas:
         
         self.carrito = []
         self.db_config = self.cargar_configuracion()
+        
+        # Si la configuración falló, salir
+        if self.db_config is None:
+            return
+        self.inicializar_base_datos_segura()
+        # Inicializar base de datos y tablas si no existen
+        print("🔧 Inicializando base de datos...")
+        inicializar_base_datos(self.db_config)
 
         # --- CONFIGURACIÓN DE ESTILO ---
         COLOR_FONDO = "#e6e6e6"
@@ -1207,81 +1260,36 @@ class SistemaVentas:
 
         self.total_acumulado = 0.0
 
-
-
-    '''def __init__(self, root):
-        self.root = root
-        self.root.title("Punto de Venta - Python + MySQL")
-        self.root.geometry("900x600")
-
-        # --- CARGAR CONFIGURACIÓN EXTERNA ---
-        self.db_config = self.cargar_configuracion()
+    def inicializar_base_datos_segura(self):
+        """
+        Se conecta SOLO al servidor para crear la BD si no existe.
+        """
+        # 1. Copiamos la configuración pero QUITAMOS la base de datos
+        #    para que no intente conectarse a algo que quizás no existe.
+        config_servidor = self.db_config.copy()
+        nombre_bd = config_servidor.pop('database', 'punto_venta') # Sacamos el nombre y lo guardamos
         
-        # Si la configuración falló, el root ya fue destruido, salir inmediatamente
-        if self.db_config is None:
-            return
+        print(f"Verificando existencia de BD: {nombre_bd}...")
         
-        # Lista para manejar los datos lógicos de la venta actual
-        self.carrito = [] # ### NUEVO: Aquí guardaremos los objetos completos
-        
-        self.db_config = {
-            'host': 'localhost',
-            'user': 'root',
-            'password': '', # <--- RECUERDA PONER TU PASSWORD
-            'database': 'punto_ventas'
-        }
-
-        # --- INTERFAZ GRÁFICA ---
-        
-        # 1. Panel Superior
-        frame_top = tk.Frame(self.root, bg="#f0f0f0", pady=20)
-        frame_top.pack(fill="x")
-        
-        tk.Label(frame_top, text="Código de Barras:", bg="#f0f0f0", font=("Arial", 12)).pack(side="left", padx=20)
-        
-        self.entry_codigo = tk.Entry(frame_top, font=("Arial", 14), width=20)
-        self.entry_codigo.pack(side="left")
-        self.entry_codigo.bind('<Return>', self.buscar_producto)
-        self.entry_codigo.focus_set()
-        style = ttk.Style()
-        style.theme_use("default") # Usamos 'default' o 'clam' para poder cambiar colores facil
-        style.map("Treeview", 
-              background=[('selected', '#d9534f')], # Rojo suave al seleccionar
-              foreground=[('selected', 'white')]
-              )
-        # 2. Panel Central
-        self.tree = ttk.Treeview(self.root, columns=("ID", "Producto", "Precio", "Cantidad", "Subtotal"), show='headings')
-        self.tree.heading("ID", text="ID") # ### NUEVO: Columna ID (aunque podríamos ocultarla)
-        self.tree.column("ID", width=50)
-        self.tree.heading("Producto", text="Producto")
-        self.tree.heading("Precio", text="Precio")
-        self.tree.heading("Cantidad", text="Cantidad")
-        self.tree.heading("Subtotal", text="Subtotal")
-        self.tree.pack(fill="both", expand=True, padx=20, pady=20)
-        self.tree.bind("<Delete>", self.eliminar_producto)
-
-        # 3. Panel Inferior
-        frame_bottom = tk.Frame(self.root, bg="#333", pady=15)
-        frame_bottom.pack(fill="x", side="bottom")
-
-        btn_ver_inventario = tk.Button(self.root, text="Ver Todo el Inventario", bg="#17a2b8", fg="white", 
-                                       command=self.abrir_lista_inventario)
-        btn_ver_inventario.pack(side="top", anchor="ne", pady=5)
-
-        # Dentro de __init__ de SistemaVentas:
-        btn_inventario = tk.Button(frame_bottom, text="Gestión Inventario", command=self.abrir_inventario)
-        btn_inventario.pack(side="left", padx=20)
-        
-        # ### NUEVO: Botón de Cobrar
-        btn_cobrar = tk.Button(frame_bottom, text="FINALIZAR VENTA (F5)", bg="#28a745", fg="white", font=("Arial", 12, "bold"), command=self.guardar_venta)
-        btn_cobrar.pack(side="left", padx=20)
-        # Atajo de teclado para cobrar
-        self.root.bind('<F5>', lambda event: self.guardar_venta())
-        
-        self.lbl_total = tk.Label(frame_bottom, text="TOTAL: $0.00", fg="white", bg="#333", font=("Arial", 24, "bold"))
-        self.lbl_total.pack(side="right", padx=30)
-
-        self.total_acumulado = 0.0'''
+        try:
+            # 2. Conectamos al servidor MySQL "en general" (sin entrar a ninguna BD específica)
+            conexion_temp = mysql.connector.connect(**config_servidor)
+            cursor = conexion_temp.cursor()
+            
+            # 3. Creamos la base de datos (Si ya existe, no hace nada)
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {nombre_bd}")
+            conexion_temp.commit()
+            
+            print("Base de datos verificada/creada con éxito.")
+            
+            # 4. Cerramos esta conexión temporal
+            cursor.close()
+            conexion_temp.close()
+            
+        except mysql.connector.Error as err:
+            # Si falla aquí, es porque no hay MySQL instalado o la clave está mal
+            messagebox.showerror("Error Crítico", f"No se pudo conectar al servidor MySQL.\nVerifique XAMPP.\nDetalle: {err}")
+            sys.exit(1)
 
 
     def cargar_configuracion(self):
@@ -1982,13 +1990,21 @@ class SistemaVentas:
 
 # --- ARRANQUE ---
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = SistemaVentas(root)
-    # --- MAGIA AQUÍ ---
-    # Leemos la config y corremos el setup automático
-    config = app.cargar_configuracion() 
-    if config:
-        # Llamamos a la función que acabamos de crear arriba
-        inicializar_base_datos(config)
-    # ------------------
-    root.mainloop()
+    try:
+        # Poner esto al principio ayuda a ver si arranca
+        print("Iniciando aplicación...") 
+        
+        root = tk.Tk()
+        app = SistemaVentas(root)
+        root.mainloop()
+        
+    except Exception as e:
+        # SI FALLA, ESCRIBE EL ERROR EN UN ARCHIVO
+        with open("error_log.txt", "w") as f:
+            f.write("ERROR FATAL:\n")
+            f.write(traceback.format_exc())
+        
+        # Y TAMBIÉN LO IMPRIME EN CONSOLA POR SI ACASO
+        print("SE PRODUJO UN ERROR:")
+        print(traceback.format_exc())
+        input("Presiona ENTER para salir...") # <--- Esto evita que la ventana se cierre
