@@ -85,7 +85,8 @@ def inicializar_base_datos(config_ini):
                 codigo_barras VARCHAR(50) UNIQUE NOT NULL,
                 nombre VARCHAR(100) NOT NULL,
                 precio_venta DECIMAL(10,2) DEFAULT 0.00,
-                stock_actual INT DEFAULT 0
+                stock_actual INT DEFAULT 0,
+                tipo VARCHAR(10) DEFAULT 'Unidad'
             ) ENGINE=InnoDB;
         """
         
@@ -163,14 +164,14 @@ def inicializar_base_datos(config_ini):
 
         # 6. (Opcional) Cargar datos iniciales básicos si está vacío
         #    Ejemplo: Un producto de prueba o un usuario Admin
-        try:
-            cursor.execute("SELECT COUNT(*) FROM productos")
-            if cursor.fetchone()[0] == 0:
-                print("📦 Base de datos nueva detectada. Insertando producto de ejemplo...")
-                cursor.execute("INSERT INTO productos (codigo_barras, nombre, precio_venta, stock_actual) VALUES ('12345', 'Producto Prueba', 100.00, 10)")
-                conexion.commit()
-        except mysql.connector.Error as err:
-            print(f"⚠️  Info al insertar producto ejemplo: {err.msg}")
+        #try:
+        #    cursor.execute("SELECT COUNT(*) FROM productos")
+        #    if cursor.fetchone()[0] == 0:
+        #        print("📦 Base de datos nueva detectada. Insertando producto de ejemplo...")
+        #        cursor.execute("INSERT INTO productos (codigo_barras, nombre, precio_venta, stock_actual) VALUES ('12345', 'Producto Prueba', 100.00, 10)")
+         #       conexion.commit()
+        #except mysql.connector.Error as err:
+        #    print(f"⚠️  Info al insertar producto ejemplo: {err.msg}")
 
         print("🚀 Inicialización de base de datos completa.")
         return True
@@ -646,7 +647,7 @@ class VentanaInventario:
         self.var_stock = tk.IntVar(value=0)
         self.producto_existente = False
         self.placeholder_text = "Escribe aquí el nombre del nuevo producto..."
-
+        self.var_tipo = tk.StringVar(value="Unidad")
         # ==========================================
         # 1. ENCABEZADO (Banner Azul)
         # ==========================================
@@ -679,9 +680,10 @@ class VentanaInventario:
         
         # Usamos Grid para organizar bonito dentro del marco blanco
         self.frame_datos.columnconfigure(1, weight=1) # Columna derecha elástica
-
+        
         # --- NOMBRE ---
         tk.Label(self.frame_datos, text="Nombre del Producto:", bg=self.COLOR_BLANCO, font=self.FONT_LABEL).grid(row=0, column=0, sticky="w", padx=20, pady=(20,5))
+        
         
         # Creamos los dos widgets (Label fijo y Entry editable) pero no los mostramos aún (.grid_forget)
         self.lbl_nombre_fijo = tk.Label(self.frame_datos, text="", font=("Segoe UI", 16, "bold"), 
@@ -693,6 +695,7 @@ class VentanaInventario:
         self.entry_nombre.bind("<FocusOut>", self.on_entry_focus_out)
         self.entry_nombre.bind("<KeyPress>", self.on_entry_key_press)  # Borrar placeholder al escribir
 
+        
         # --- PRECIO Y STOCK (Lado a Lado para ahorrar espacio vertical) ---
        # --- REGISTRO DE VALIDADORES ---
         # Registramos las funciones en el sistema de Tcl/Tk
@@ -718,6 +721,20 @@ class VentanaInventario:
         # Ayuda visual debajo de los campos
         tk.Label(self.frame_datos, text="Use punto para decimales (ej: 1500.50)", bg=self.COLOR_BLANCO, fg="grey", font=("Arial", 9)).grid(row=4, column=0, sticky="w", padx=20)
 
+        # --- TIPO DE PRODUCTO ---
+        tk.Label(self.frame_datos, text="Tipo:", bg=self.COLOR_BLANCO,
+                font=self.FONT_LABEL).grid(row=6, column=0, sticky="w", padx=20, pady=(5,5))
+
+        self.combo_tipo = ttk.Combobox(
+            self.frame_datos,
+            textvariable=self.var_tipo,
+            values=["Unidad", "Granel"],
+            state="readonly",
+            width=12,
+            font=self.FONT_ENTRY
+        )
+        self.combo_tipo.grid(row=6, column=1, sticky="w", padx=20, pady=(5,5))
+        self.combo_tipo.current(0)
         # ==========================================
         # 4. BOTONES DE ACCIÓN (Grandes)
         # ==========================================
@@ -891,7 +908,7 @@ class VentanaInventario:
                 self.var_nombre.set(producto_local['nombre'])
                 self.var_precio.set(producto_local['precio_venta'])
                 self.var_stock.set(producto_local['stock_actual'])
-                
+                self.var_tipo.set(producto_local.get('tipo', 'Unidad'))
                 self.entry_precio.focus_set()
                 self.entry_precio.select_range(0, tk.END)
                 
@@ -999,6 +1016,7 @@ class VentanaInventario:
         # 1. Obtener datos (Validaciones igual que antes...)
         codigo = self.var_codigo.get()
         nombre = self.var_nombre.get()
+        tipo = self.var_tipo.get()
         txt_precio = self.entry_precio.get()
         txt_stock = self.entry_stock.get()
 
@@ -1023,12 +1041,12 @@ class VentanaInventario:
             cursor = conexion.cursor()
             
             if self.producto_existente:
-                sql = "UPDATE productos SET nombre=%s, precio_venta=%s, stock_actual=%s WHERE codigo_barras=%s"
-                cursor.execute(sql, (nombre, precio_final, stock_final, codigo))
+                sql = "UPDATE productos SET nombre=%s, precio_venta=%s, stock_actual=%s, tipo=%s WHERE codigo_barras=%s"
+                cursor.execute(sql, (nombre, precio_final, stock_final, tipo, codigo))
                 texto_exito = "✅ Producto Actualizado"
             else:
-                sql = "INSERT INTO productos (codigo_barras, nombre, precio_venta, stock_actual) VALUES (%s, %s, %s, %s)"
-                cursor.execute(sql, (codigo, nombre, precio_final, stock_final))
+                sql = "INSERT INTO productos (codigo_barras, nombre, precio_venta, stock_actual, tipo) VALUES (%s, %s, %s, %s, %s)"
+                cursor.execute(sql, (codigo, nombre, precio_final, stock_final, tipo))
                 texto_exito = "✅ Producto Nuevo Registrado"
             
             conexion.commit()
@@ -1086,6 +1104,42 @@ class VentanaInventario:
         if texto_actual == "":
             self.var_nombre.set(self.placeholder_text)
             self.entry_nombre.config(fg="grey") # Color gris bajito
+
+class VentanaVentaGranel:
+    def __init__(self, master, producto, callback):
+        self.top = tk.Toplevel(master)
+        self.top.title("Venta a granel")
+        self.top.geometry("300x200")
+        self.top.grab_set()
+
+        self.producto = producto
+        self.callback = callback
+        self.var_precio = tk.DoubleVar(value=0.0)
+
+        tk.Label(self.top, text=producto['nombre'], font=("Segoe UI", 11, "bold")).pack(pady=10)
+        tk.Label(self.top, text="Precio de esta venta ($):").pack()
+        entry = tk.Entry(self.top, textvariable=self.var_precio,
+                         font=("Segoe UI", 14), justify="center")
+        entry.pack(pady=5)
+        entry.bind("<Return>", lambda e: self.confirmar())
+        entry.focus_set()
+
+        tk.Button(self.top, text="Aceptar", bg="#28a745", fg="white",
+                  command=self.confirmar).pack(pady=10, fill="x", padx=30)
+
+    def confirmar(self):
+        try:
+            precio = float(self.var_precio.get())
+            if precio <= 0:
+                messagebox.showwarning("Atención", "El precio debe ser mayor que 0.")
+                return
+        except ValueError:
+            messagebox.showwarning("Atención", "Ingrese un precio válido.")
+            return
+
+        self.top.destroy()
+        self.callback(self.producto, precio)
+
 
 class SistemaVentas:
     def __init__(self, root):
@@ -1317,52 +1371,81 @@ class SistemaVentas:
             messagebox.showerror("Error Fatal", f"No se pudo leer config.ini: {e}")
             self.root.destroy() # Cierra el programa
             return None
+
+    def agregar_producto_granel(self, producto_bd, precio_venta):
+        nuevo_item = {
+            'id': producto_bd['id'],
+            'codigo': producto_bd['codigo_barras'],
+            'nombre': producto_bd['nombre'],
+            'precio': float(precio_venta),
+            'cantidad': 1,
+            'subtotal': float(precio_venta),
+            'tipo': producto_bd.get('tipo', 'Unidad'),
+        }
+        self.carrito.append(nuevo_item)
+        self.actualizar_carrito_visual()
+        self.entry_codigo.delete(0, tk.END)
+
     def buscar_producto(self, event=None):
         codigo = self.entry_codigo.get().strip()
-        if not codigo: return
+        if not codigo:
+            return
 
+        producto_bd = None
         try:
             conexion = mysql.connector.connect(**self.db_config)
             cursor = conexion.cursor(dictionary=True)
             cursor.execute("SELECT * FROM productos WHERE codigo_barras = %s", (codigo,))
             producto_bd = cursor.fetchone()
             conexion.close()
-        except Exception as e:
-            messagebox.showerror("Error", f"Error BD: {e}")
+        except mysql.connector.Error as err:
+            messagebox.showerror("Error de Base de Datos", f"No se pudo conectar o consultar: {err}")
+            self.entry_codigo.delete(0, tk.END)
             return
 
-        if producto_bd:
-            # 1. Verificar Stock
-            if producto_bd['stock_actual'] <= 0:
-                messagebox.showwarning("Stock", "Producto agotado.")
-                self.entry_codigo.delete(0, tk.END)
-                return
-
-            # 2. Lógica de Agrupación (Cantidad)
-            encontrado = False
-            for item in self.carrito:
-                if item['id'] == producto_bd['id']:
-                    item['cantidad'] += 1
-                    item['subtotal'] = item['cantidad'] * item['precio']
-                    encontrado = True
-                    break
-            
-            if not encontrado:
-                nuevo_item = {
-                    'id': producto_bd['id'],
-                    'codigo': producto_bd['codigo_barras'],
-                    'nombre': producto_bd['nombre'],
-                    'precio': float(producto_bd['precio_venta']),
-                    'cantidad': 1,
-                    'subtotal': float(producto_bd['precio_venta'])
-                }
-                self.carrito.append(nuevo_item)
-
-            # 3. Refrescar la interfaz
-            self.actualizar_carrito_visual()
+        if not producto_bd:
+            messagebox.showwarning("No encontrado", "No existe un producto con ese código.")
             self.entry_codigo.delete(0, tk.END)
-        else:
-            messagebox.showwarning("Error", "Producto no encontrado")
+            return
+
+        # A partir de aquí, 'producto_bd' existe.
+
+        # Caso 1: Producto a granel
+        tipo = producto_bd.get('tipo', 'Unidad')
+        if tipo.lower().startswith('granel'):
+            VentanaVentaGranel(self.root, producto_bd, self.agregar_producto_granel)
+            self.entry_codigo.delete(0, tk.END)
+            return
+
+        # Caso 2: Producto por unidad (no es a granel)
+        if producto_bd['stock_actual'] <= 0:
+            messagebox.showwarning("Stock Agotado", "No queda stock para este producto.")
+            self.entry_codigo.delete(0, tk.END)
+            return
+
+        # Lógica para agregar al carrito
+        encontrado_en_carrito = False
+        for item in self.carrito:
+            if item['id'] == producto_bd['id']:
+                item['cantidad'] += 1
+                item['subtotal'] = item['cantidad'] * item['precio']
+                encontrado_en_carrito = True
+                break
+        
+        if not encontrado_en_carrito:
+            nuevo_item = {
+                'id': producto_bd['id'],
+                'codigo': producto_bd['codigo_barras'],
+                'nombre': producto_bd['nombre'],
+                'precio': float(producto_bd['precio_venta']),
+                'cantidad': 1,
+                'subtotal': float(producto_bd['precio_venta']),
+                'tipo': producto_bd.get('tipo', 'Unidad')
+            }
+            self.carrito.append(nuevo_item)
+
+        self.actualizar_carrito_visual()
+        self.entry_codigo.delete(0, tk.END)
 
 
     def actualizar_carrito_visual(self):
