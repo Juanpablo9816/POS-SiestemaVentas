@@ -1,0 +1,8 @@
+mysql-connector-python
+requests
+pywin32
+configparser
+pandas==1.5.3
+openpyxl
+Pillow
+numpy<2.0
